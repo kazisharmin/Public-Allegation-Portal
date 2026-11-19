@@ -8,6 +8,7 @@ import {
   LogOut,
   User as UserIcon,
   Settings,
+  HelpCircle,
   Eye,
   ThumbsUp,
   Loader2,
@@ -514,7 +515,7 @@ export default function User_dashboard() {
 
   const handleLogout = () => {
     try { localStorage.removeItem("token"); } catch {}
-    navigate("/Landing_page", { replace: true });
+    navigate("/", { replace: true });
   };
 
   const openDetail = async (c) => {
@@ -712,6 +713,10 @@ export default function User_dashboard() {
                       <Link to="/user/settings" className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">
                         <Settings className="w-4 h-4" />
                         Settings
+                      </Link>
+                      <Link to="/help" className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">
+                        <HelpCircle className="w-4 h-4" />
+                        Help
                       </Link>
                       <div className="h-px bg-gray-100 my-2" />
                       <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50">

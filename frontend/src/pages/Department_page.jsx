@@ -85,6 +85,7 @@ export default function Department_page() {
       const res = await fetch(`${API}/complaints/${id}/vote`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
       });
       const data = await res.json();
       if (data.success) {

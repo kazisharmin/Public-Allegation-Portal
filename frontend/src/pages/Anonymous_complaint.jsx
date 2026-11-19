@@ -54,12 +54,8 @@ export default function Anonymous_complaint() {
         if (!canceled) setOrganizations(normalized);
       } catch {
         if (!canceled) {
-          setOrganizations([
-            { id: "org-municipality", name: "Sample Municipality" },
-            { id: "org-water", name: "Sample Water Board" },
-            { id: "org-health", name: "Sample Health Org" },
-          ]);
-          setOrgErr("Showing cached organizations.");
+          setOrganizations([]);
+          setOrgErr("Couldn't load organizations. Please check your connection and refresh the page.");
         }
       } finally {
         if (!canceled) setLoadingOrgs(false);
@@ -133,8 +129,8 @@ export default function Anonymous_complaint() {
       setFileName("");
       return;
     }
-    if (f.size > 10 * 1024 * 1024) {
-      setFormErr("File too large. Max 10MB.");
+    if (f.size > 4 * 1024 * 1024) {
+      setFormErr("File too large. Max 4MB.");
       setFileObj(null);
       setFileName("");
       return;
@@ -387,7 +383,7 @@ export default function Anonymous_complaint() {
                     {fileName || "No file selected"}
                   </div>
                   <div className="text-xs text-gray-500">
-                    Supported: .jpg, .png, .pdf, .mp4, .mp3 (max 10MB)
+                    Supported: .jpg, .png, .pdf, .mp4, .mp3 (max 4MB)
                   </div>
                 </div>
               </div>

@@ -147,8 +147,8 @@ export default function New_complaint() {
       setFileName("");
       return;
     }
-    if (f.size > 10 * 1024 * 1024) {
-      setErr("File too large. Max 10MB.");
+    if (f.size > 4 * 1024 * 1024) {
+      setErr("File too large. Max 4MB.");
       setFileObj(null);
       setFileName("");
       return;
@@ -363,7 +363,7 @@ export default function New_complaint() {
                     {fileName || "No file selected"}
                   </div>
                   <div className="text-xs text-gray-500">
-                    Supported: .jpg, .png, .pdf, .mp4, .mp3 (max 10MB)
+                    Supported: .jpg, .png, .pdf, .mp4, .mp3 (max 4MB)
                   </div>
                 </div>
               </div>

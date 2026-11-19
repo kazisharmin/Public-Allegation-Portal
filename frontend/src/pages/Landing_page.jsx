@@ -2,10 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Search, Building2, FileText, Users, ShieldCheck } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
-// Mock auth functions for demo
-const getToken = () => null;
-const whoAmI = async () => ({ ok: false });
-const clearAuth = () => {};
+import { getToken, whoAmI, clearAuth } from "../utils/auth";
 
 // const API = "/api";
 const API = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
@@ -263,7 +260,7 @@ export default function Landing_page() {
                 <Link to="/login" className="hover:underline">Login</Link>
               </li>
               <li>
-                <Link to="/contact" className="hover:underline">Contact</Link>
+                <Link to="/help" className="hover:underline">Help &amp; FAQ</Link>
               </li>
             </ul>
           </div>

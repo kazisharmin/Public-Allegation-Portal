@@ -1,4 +1,6 @@
 // frontend/src/utils/auth.js
+import { API_BASE } from "../config/api";
+
 export const TOKEN_KEY = "token";
 export const USER_ID_KEY = "userId";
 export const ORG_ID_KEY = "orgId";
@@ -27,7 +29,7 @@ export function authHeaders() {
 // Validate current token and learn who we are.
 // Returns: { ok: boolean, type: 'user'|'organization'|null, organizationSlug?: string }
 export async function whoAmI() {
-  const res = await fetch("/api/auth/me", { headers: { ...authHeaders() } });
+  const res = await fetch(`${API_BASE}/auth/me`, { headers: { ...authHeaders() } });
   if (!res.ok) return { ok: false, type: null };
   const data = await res.json().catch(() => ({}));
   if (!data?.success) return { ok: false, type: null };

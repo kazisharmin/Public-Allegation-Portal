@@ -6,7 +6,6 @@ import Register from "./pages/Register";
 import User_dashboard from "./pages/User_dashboard";
 import New_complaint from "./pages/New_complaint";
 import Organization_page from "./pages/Organization_page";
-import Admin_home_page from "./pages/Admin_home_page";
 import Anonymous_complaint from "./pages/Anonymous_complaint";
 import { getToken } from "./utils/auth";
 
@@ -55,15 +54,6 @@ export default function App() {
           element={
             <PrivateRoute>
               <New_complaint />
-            </PrivateRoute>
-          }
-        />
-        
-        <Route
-          path="/admin_home_page"
-          element={
-            <PrivateRoute>
-              <Admin_home_page />
             </PrivateRoute>
           }
         />

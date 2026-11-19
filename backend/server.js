@@ -13,7 +13,8 @@ import bcrypt from "bcrypt";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import { fileURLToPath } from "url";
-import crypto from "crypto"; 
+import crypto from "crypto";
+import { v2 as cloudinary } from "cloudinary";
 
 // --- Setup for ESM paths ---
 const __filename = fileURLToPath(import.meta.url);
@@ -23,17 +24,39 @@ const __dirname = path.dirname(__filename);
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || "dev-only-change-this";
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const IS_PROD = process.env.NODE_ENV === "production" || IS_VERCEL;
+const JWT_SECRET = process.env.JWT_SECRET || (IS_PROD ? null : "dev-only-change-this");
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET must be set in production (add it in your Vercel environment variables).");
+}
+// Vercel's filesystem is read-only except /tmp, so local uploads go there.
+const UPLOAD_DIR = IS_VERCEL ? "/tmp/uploads" : path.join(process.cwd(), "uploads");
+
+// Cloudinary is used for uploads when its credentials are set (required on Vercel,
+// because files saved on a serverless function disappear after the request).
+const USE_CLOUDINARY = Boolean(
+  process.env.CLOUDINARY_URL ||
+  (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET)
+);
+if (USE_CLOUDINARY && !process.env.CLOUDINARY_URL) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure: true,
+  });
+}
 const WITHDRAW_RETENTION_DAYS = Number(process.env.WITHDRAW_RETENTION_DAYS || 30);
 const ANON_COOKIE = 'anon_vote_id';  
 
-if (!fs.existsSync(UPLOAD_DIR)) {
+if (!USE_CLOUDINARY && !fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
 // --- Middleware ---
 
+app.set("trust proxy", 1);
 app.use(express.json());
 app.use(cookieParser());
 app.use("/uploads", express.static(UPLOAD_DIR));
@@ -43,11 +66,14 @@ app.use("/uploads", express.static(UPLOAD_DIR));
 //   credentials: true
 // }));
 
+// Add your deployed frontend URL(s) in FRONTEND_URL, comma-separated.
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
   'https://public-allegation-portal-five.vercel.app',
-  'https://public-allegation-portal-five.vercel.app/',  // With trailing slash we need it too
+  ...String(process.env.FRONTEND_URL || '').split(',').map(s => s.trim()).filter(Boolean),
 ];
 
 app.use(cors({
@@ -83,30 +109,58 @@ app.use(cors({
 // app.use('/uploads', express.static('uploads'));
 
 // --- MySQL pool ---
+// DB_PORT: 3306 for local MySQL/XAMPP, 4000 for TiDB Cloud.
+// DB_SSL=true is required by TiDB Cloud and most hosted databases.
 const db = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
+  port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASS || "",
-  database: process.env.DB_NAME || "railway",
+  database: process.env.DB_NAME || "allegation_portal",
   waitForConnections: true,
-  connectionLimit: 10,
-  
-  // port: process.env.DB_PORT || 3307;  //<-------------this line is needed in kheya's server, not zahra's
+  connectionLimit: IS_VERCEL ? 3 : 10,   // serverless: keep few connections per instance
+  ...(String(process.env.DB_SSL).toLowerCase() === "true"
+    ? { ssl: { minVersion: "TLSv1.2", rejectUnauthorized: true } }
+    : {}),
 });
 
 // --- Uploads (multer) ---
-const storage = multer.diskStorage({
-  destination: UPLOAD_DIR,
-  filename: (req, file, cb) =>
-    cb(
-      null,
-      Date.now() +
-        "-" +
-        Math.random().toString(36).slice(2, 8) +
-        path.extname(file.originalname)
-    ),
+// Files are kept in memory first, then saved to Cloudinary (or the local uploads folder).
+const upload = multer({
+  storage: multer.memoryStorage(),
+  // Vercel functions accept request bodies up to about 4.5 MB, so we cap files at 4 MB.
+  limits: { fileSize: 4 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = /^(image\/(png|jpe?g|gif|webp)|application\/pdf|video\/mp4|audio\/(mpeg|mp3))$/.test(file.mimetype);
+    cb(ok ? null : new Error("Only images (PNG, JPG, GIF, WEBP), PDF, MP4 and MP3 files are allowed"), ok);
+  },
 });
-const upload = multer({ storage });
+
+// Saves an uploaded file and returns what we store in the database:
+// a full https URL (Cloudinary) or a /uploads/... path (local development).
+async function saveUpload(file, folder) {
+  if (!file) return null;
+  if (USE_CLOUDINARY) {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: `allegation-portal/${folder}`, resource_type: "auto" },
+        (err, res) => (err ? reject(err) : resolve(res))
+      );
+      stream.end(file.buffer);
+    });
+    return result.secure_url;
+  }
+  const name = Date.now() + "-" + Math.random().toString(36).slice(2, 8) + path.extname(file.originalname);
+  await fs.promises.writeFile(path.join(UPLOAD_DIR, name), file.buffer);
+  return `/uploads/${name}`;
+}
+
+// Turns a stored path into a URL the browser can open.
+function fileUrl(req, stored) {
+  if (!stored) return null;
+  if (/^https?:\/\//i.test(stored)) return stored;
+  return `${req.protocol}://${req.get("host")}${stored}`;
+}
 
 // --- Helpers ---
 const slugify = (s) =>
@@ -315,7 +369,7 @@ app.get("/api/auth/me", auth, async (req, res) => {
       );
       if (!rows.length) return res.status(404).json({ success: false, error: "Organization not found" });
       const org = rows[0];
-      org.logo = org.logo ? `http://localhost:${PORT}${org.logo}` : null;
+      org.logo = fileUrl(req, org.logo);
       return res.json({ success: true, type: "organization", profile: org });
     }
 
@@ -550,7 +604,7 @@ app.post("/register", upload.single("logo"), async (req, res) => {
       return res.status(400).json({ success: false, error: "All fields are required" });
 
     const slug = slugify(orgName);
-    const logo = req.file ? `/uploads/${req.file.filename}` : null;
+    const logo = await saveUpload(req.file, "logos");
     const accessType = companyType;
 
     const [[orgByName]] = await db.query("SELECT COUNT(*) AS c FROM organizations WHERE name=?", [orgName]);
@@ -584,7 +638,7 @@ app.post("/api/register/organization", upload.single("logo"), async (req, res) =
       return res.status(400).json({ success: false, message: "Missing required fields" });
 
     const slug = slugify(orgName);
-    const logo = req.file ? `/uploads/${req.file.filename}` : null;
+    const logo = await saveUpload(req.file, "logos");
     const accessType = orgType || "Public";
 
     const [[byName]] = await db.query("SELECT COUNT(*) AS c FROM organizations WHERE name=?", [orgName]);
@@ -618,7 +672,7 @@ app.post("/register/organization", upload.single("logo"), async (req, res) => {
       return res.status(400).json({ success: false, message: "Missing required fields" });
 
     const slug = slugify(orgName);
-    const logo = req.file ? `/uploads/${req.file.filename}` : null;
+    const logo = await saveUpload(req.file, "logos");
     const accessType = orgType || "Public";
 
     const [[byName]] = await db.query("SELECT COUNT(*) AS c FROM organizations WHERE name=?", [orgName]);
@@ -666,7 +720,7 @@ app.get("/api/organizations", async (req, res) => {
       address: org.address,
       description: org.description,
       access_type: org.access_type,
-      logo: org.logo ? `${req.protocol}://${req.get("host")}${org.logo}` : null,
+      logo: fileUrl(req, org.logo),
       status: org.status
     }));
 
@@ -819,7 +873,7 @@ app.get("/api/organizations/:slug", async (req, res) => {
   try {
     const org = await findOrgBySlug(req.params.slug);
     if (!org) return res.status(404).json({ success: false, message: "Organization not found" });
-    org.logo = org.logo ? `http://localhost:${PORT}${org.logo}` : null;
+    org.logo = fileUrl(req, org.logo);
     org.isPublic = org.access_type === "Public"; // Frontend expects isPublic
     return res.json({ success: true, organization: org });
   } catch (e) {
@@ -883,7 +937,7 @@ app.get("/api/organizations/:slug/complaints", softAuth, async (req, res) => {
   try {
     const org = await findOrgBySlug(req.params.slug);
     if (!org) return res.status(404).json({ success: false, message: "Organization not found" });
-    org.logo = org.logo ? `http://localhost:${PORT}${org.logo}` : null;
+    org.logo = fileUrl(req, org.logo);
     org.isPublic = org.access_type === "Public";
 
     let canSee = org.access_type === "Public";
@@ -967,7 +1021,7 @@ const voteRows = rows.length > 0 ? await db.query(
       trackingCode: r.trackingCode,
       department: r.departmentName || "Entire organization",
       submittedBy: r.isAnonymous ? "Anonymous" : (r.userName || "User"),
-      document: r.attachment_path ? `http://localhost:${PORT}${r.attachment_path}` : null,
+      document: fileUrl(req, r.attachment_path),
       votes: voteMap[r.id] || 0,
     }));
 
@@ -1001,7 +1055,7 @@ app.get("/api/public/organizations/search", async (req, res) => {
       name: r.name,
       slug: r.slug,
       access_type: r.access_type,
-      logo: r.logo ? `http://localhost:${PORT}${r.logo}` : null,
+      logo: fileUrl(req, r.logo),
     }));
     res.json({ success: true, items });
   } catch (e) {
@@ -1163,7 +1217,7 @@ app.post("/api/complaints", softAuth, upload.single("attachment"), async (req, r
       }
     }
 
-    const attachment_path = req.file ? `/uploads/${req.file.filename}` : null;
+    const attachment_path = await saveUpload(req.file, "attachments");
     const trackingCode = Math.random().toString(36).slice(2, 10).toUpperCase();
     const userId = !anonymous && req.user?.role === "user" ? req.user.id : null;
 
@@ -1236,14 +1290,14 @@ app.get("/api/complaints/:id", auth, async (req, res) => {
       trackingCode: r.trackingCode,
       organization: { id: r.orgId, name: r.orgName },
       department: r.deptId ? { id: r.deptId, name: r.deptName } : null,
-      attachmentUrl: r.attachment_path ? `http://localhost:${PORT}${r.attachment_path}` : null,
-      document: r.attachment_path ? `http://localhost:${PORT}${r.attachment_path}` : null,
+      attachmentUrl: fileUrl(req, r.attachment_path),
+      document: fileUrl(req, r.attachment_path),
       votes: voteRow?.votes || r.votes || 0,
       user_id: r.userId, // Include for vote blocking logic
       // Format attachments as array for consistency
       attachments: r.attachment_path ? [{
-        url: `http://localhost:${PORT}${r.attachment_path}`,
-        name: r.attachment_path.split('/').pop()
+        url: fileUrl(req, r.attachment_path),
+        name: r.attachment_path.split('/').pop().split('?')[0]
       }] : []
     };
 
@@ -1298,8 +1352,10 @@ app.post('/api/complaints/:id/vote', async (req, res) => {
       anonId = crypto.randomBytes(16).toString('hex');
       res.cookie(ANON_COOKIE, anonId, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        // Frontend and backend are on different domains in production,
+        // so the cookie must be SameSite=None (which requires Secure).
+        secure: IS_PROD,
+        sameSite: IS_PROD ? 'none' : 'lax',
         maxAge: 365 * 24 * 60 * 60 * 1000 // 1 year
       });
     }
@@ -1738,13 +1794,13 @@ if (title !== undefined || description !== undefined) {
     trackingCode: r.trackingCode,
     organization: { id: r.orgId, name: r.orgName },
     department: r.deptId ? { id: r.deptId, name: r.deptName } : null,
-    attachmentUrl: r.attachment_path ? `http://localhost:${PORT}${r.attachment_path}` : null,
-    document: r.attachment_path ? `http://localhost:${PORT}${r.attachment_path}` : null,
+    attachmentUrl: fileUrl(req, r.attachment_path),
+    document: fileUrl(req, r.attachment_path),
     votes: voteRow?.votes || r.votes || 0,
     user_id: r.userId,
     attachments: r.attachment_path ? [{
-      url: `http://localhost:${PORT}${r.attachment_path}`,
-      name: r.attachment_path.split('/').pop()
+      url: fileUrl(req, r.attachment_path),
+      name: r.attachment_path.split('/').pop().split('?')[0]
     }] : []
   };
 
@@ -1862,8 +1918,21 @@ async function purgeWithdrawn() {
   }
 }
 
-setInterval(purgeWithdrawn, 6 * 60 * 60 * 1000);
-setTimeout(purgeWithdrawn, 15 * 1000);
+// On a normal server we run the purge on a timer.
+// On Vercel there is no long-running process, so Vercel Cron calls /api/cron/purge daily.
+if (!IS_VERCEL) {
+  setInterval(purgeWithdrawn, 6 * 60 * 60 * 1000);
+  setTimeout(purgeWithdrawn, 15 * 1000);
+}
+
+app.get("/api/cron/purge", async (req, res) => {
+  // Vercel Cron sends "Authorization: Bearer <CRON_SECRET>"
+  if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+  await purgeWithdrawn();
+  res.json({ success: true });
+});
 
 
 //department logo in the profile upload / update:
@@ -1892,7 +1961,7 @@ app.post("/api/organizations/:id/logo", auth, upload.single("logo"), async (req,
       [orgId]
     );
 
-    if (org.length && org[0].logo) {
+    if (org.length && org[0].logo && org[0].logo.startsWith("/uploads/")) {
       const oldLogoPath = path.join(process.cwd(), org[0].logo.replace(/^\//, ''));
       try {
         if (fs.existsSync(oldLogoPath)) {
@@ -1904,14 +1973,14 @@ app.post("/api/organizations/:id/logo", auth, upload.single("logo"), async (req,
     }
 
     // Save new logo path
-    const logoPath = `/uploads/${req.file.filename}`;
+    const logoPath = await saveUpload(req.file, "logos");
     
     await db.query(
       "UPDATE organizations SET logo = ? WHERE id = ?",
       [logoPath, orgId]
     );
 
-    const logoUrl = `${req.protocol}://${req.get("host")}${logoPath}`;
+    const logoUrl = fileUrl(req, logoPath);
 
     return res.json({
       success: true,
@@ -1978,10 +2047,6 @@ app.get("/api/notifications/organization", auth, async (req, res) => {
   res.json({ items: rows });
 });
 
-app.post("/api/notifications/:id/read", auth, async (req, res) => {
-  await db.query("UPDATE notifications SET read_at = NOW() WHERE id = ? AND (user_id = ? OR org_id = ?)", [req.params.id, req.user.id, req.user.id]);
-  res.json({ success: true });
-});
 
 // =======================
 //  USER NOTIFICATIONS
@@ -2082,6 +2147,15 @@ app.get("/", (_req, res) =>
   res.send("Server running - Public Allegations Portal with /api routes active")
 );
 
+app.get("/api/health", async (_req, res) => {
+  try {
+    await db.query("SELECT 1");
+    res.json({ success: true, database: "connected", uploads: USE_CLOUDINARY ? "cloudinary" : "local" });
+  } catch (e) {
+    res.status(500).json({ success: false, database: "error", message: e.message });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Not found" });
 });
@@ -2105,6 +2179,11 @@ app.use((err, req, res, next) => {
     });
   }
   
+  // Upload errors (file too big / wrong type)
+  if (err instanceof multer.MulterError || /Only images/.test(err.message || '')) {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+
   // JWT errors
   if (err.name === 'JsonWebTokenError') {
     return res.status(401).json({ 
@@ -2121,39 +2200,36 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler - must be after error handler
-app.use((req, res) => {
-  console.log('[404] Not found:', req.method, req.url);
-  res.status(404).json({ 
-    success: false, 
-    message: "Endpoint not found",
-    url: req.url 
-  });
-});
 
 
 //===========================
-const server = app.listen(PORT, () => {
-  console.log('='.repeat(50));
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔑 JWT Secret: ${JWT_SECRET ? 'SET' : 'NOT SET'}`);
-  console.log(`📂 Upload Directory: ${UPLOAD_DIR}`);
-  console.log('='.repeat(50));
-  console.log('Available endpoints:');
-  console.log('  POST /api/auth/login');
-  console.log('  GET  /api/auth/me');
-  console.log('  GET  /api/organizations');
-  console.log('  POST /api/register/user');
-  console.log('  POST /api/register/organization');
-  console.log('='.repeat(50));
-});
+// Vercel imports the app and runs it as a serverless function.
+// Locally we start a normal server.
+export default app;
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM signal received: closing HTTP server');
-  server.close(() => {
-    console.log('HTTP server closed');
-    process.exit(0);
+if (!IS_VERCEL) {
+  const server = app.listen(PORT, () => {
+    console.log('='.repeat(50));
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔑 JWT Secret: ${JWT_SECRET ? 'SET' : 'NOT SET'}`);
+    console.log(`📂 Upload Directory: ${UPLOAD_DIR}`);
+    console.log('='.repeat(50));
+    console.log('Available endpoints:');
+    console.log('  POST /api/auth/login');
+    console.log('  GET  /api/auth/me');
+    console.log('  GET  /api/organizations');
+    console.log('  POST /api/register/user');
+    console.log('  POST /api/register/organization');
+    console.log('='.repeat(50));
   });
-});
+
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received: closing HTTP server');
+    server.close(() => {
+      console.log('HTTP server closed');
+      process.exit(0);
+    });
+  });
+}

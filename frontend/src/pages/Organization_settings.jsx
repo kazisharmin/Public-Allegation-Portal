@@ -115,8 +115,8 @@ export default function Organization_settings() {
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      alert("Image must be smaller than 5MB");
+    if (file.size > 4 * 1024 * 1024) {
+      alert("Image must be smaller than 4MB");
       return;
     }
 
@@ -326,7 +326,7 @@ export default function Organization_settings() {
                             Click to upload logo
                           </p>
                           <p className="text-xs text-gray-500">
-                            PNG, JPG up to 5MB
+                            PNG, JPG up to 4MB
                           </p>
                         </div>
                       )}

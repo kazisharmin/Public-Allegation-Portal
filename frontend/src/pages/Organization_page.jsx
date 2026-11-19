@@ -446,10 +446,14 @@ function DetailPanel({ open, onClose, complaint, loading, onUpdateStatus, onDele
               {complaint.document && (
                 <div className="bg-green-50 border border-green-100 rounded-lg p-4">
                   <h4 className="text-sm font-semibold text-gray-900 mb-3">Attachment</h4>
-                  {complaint.document.endsWith(".pdf") ? (
+                  {/\.pdf($|\?)/i.test(complaint.document) ? (
                     <a href={complaint.document} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-sm text-green-700 hover:text-green-800 font-medium hover:underline">
                       <FileText className="w-4 h-4" /> View PDF Document
                     </a>
+                  ) : /\.mp4($|\?)/i.test(complaint.document) ? (
+                    <video src={complaint.document} controls className="max-w-full rounded-lg shadow-sm border border-green-200" />
+                  ) : /\.mp3($|\?)/i.test(complaint.document) ? (
+                    <audio src={complaint.document} controls className="w-full" />
                   ) : (
                     <img src={complaint.document} alt="Attachment" className="max-w-full rounded-lg shadow-sm border border-green-200" />
                   )}
@@ -640,7 +644,7 @@ export default function Organization_page() {
 
   const handleLogout = () => {
     localStorage.removeItem("token");
-    navigate("/Landing_page", { replace: true });
+    navigate("/", { replace: true });
   };
 
   const viewComplaint = (c) => {
@@ -667,6 +671,7 @@ export default function Organization_page() {
       const res = await fetch(`${API}/complaints/${id}/vote`, {
         method: "POST",
         headers,
+        credentials: "include", // sends the anonymous-voter cookie so one person = one vote
       });
 
       if (!res.ok) {

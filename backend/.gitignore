@@ -49,3 +49,6 @@ backup/
 *.sqlite3
 *.db
 project_db.sql
+# ...but DO commit the schema and demo seed data
+!db/
+!db/*.sql
