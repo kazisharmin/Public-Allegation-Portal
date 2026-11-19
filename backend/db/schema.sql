@@ -9,6 +9,7 @@
 SET NAMES utf8mb4;
 
 -- Drop in reverse dependency order so the script can be re-run
+DROP TABLE IF EXISTS files;
 DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS complaint_edits;
 DROP TABLE IF EXISTS complaint_votes;
@@ -31,7 +32,7 @@ CREATE TABLE organizations (
   address      VARCHAR(255) NULL,
   description  TEXT NULL,
   access_type  ENUM('Public','Private') NOT NULL DEFAULT 'Public',
-  logo         VARCHAR(500) NULL,                  -- full URL (Cloudinary) or /uploads/...
+  logo         VARCHAR(500) NULL,                  -- /api/files/<token>
   status       ENUM('active','inactive') NOT NULL DEFAULT 'active',
   createdAt    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -182,4 +183,21 @@ CREATE TABLE notifications (
   CONSTRAINT fk_n_user      FOREIGN KEY (user_id)       REFERENCES users(id)         ON DELETE CASCADE,
   CONSTRAINT fk_n_org       FOREIGN KEY (org_id)        REFERENCES organizations(id) ON DELETE CASCADE,
   CONSTRAINT fk_n_complaint FOREIGN KEY (complaints_id) REFERENCES complaints(id)    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -------------------------------------------------------------
+-- Uploaded files (logos and complaint attachments), stored in the
+-- database so no separate file storage service is needed.
+-- Served by GET /api/files/<token>. Max 4 MB each.
+-- -------------------------------------------------------------
+CREATE TABLE files (
+  id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  token          CHAR(32) NOT NULL,                -- random, so links can't be guessed
+  mime           VARCHAR(100) NOT NULL,
+  original_name  VARCHAR(255) NOT NULL,
+  size           INT UNSIGNED NOT NULL,
+  data           LONGBLOB NOT NULL,
+  createdAt      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_file_token (token)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

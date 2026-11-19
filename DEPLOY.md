@@ -6,8 +6,10 @@ The app has two parts, deployed as **two Vercel projects from this one repo**:
 | --- | --- | --- |
 | Frontend (React + Vite) | `frontend/` | Vercel project #1 |
 | Backend (Express API) | `backend/` | Vercel project #2 |
-| Database (MySQL) | `backend/db/*.sql` | TiDB Cloud Starter (free, MySQL-compatible) |
-| Uploaded files | — | Cloudinary (free) |
+| Database (MySQL) + uploaded files | `backend/db/*.sql` | TiDB Cloud Starter (free, MySQL-compatible) |
+
+Uploaded logos and attachments are stored in the database (`files` table) and served by
+`GET /api/files/<token>/<name>`, so there is no separate file storage service.
 
 The frontend forwards every `/api/...` request to the backend (see `frontend/vercel.json`),
 so the browser only talks to one domain. That keeps cookies first-party and avoids CORS problems.
@@ -74,10 +76,9 @@ All passwords: `Demo@1234`
    | `DB_NAME` | `allegation_portal` |
    | `DB_SSL` | `true` |
    | `JWT_SECRET` | a long random string |
-   | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | from your Cloudinary dashboard |
    | `CRON_SECRET` | another long random string |
 
-4. **Deploy.** Then open `https://<backend>.vercel.app/api/health` and check that it says `"database":"connected"` and `"uploads":"cloudinary"`.
+4. **Deploy.** Then open `https://<backend>.vercel.app/api/health` and check that it says `"database":"connected"`.
 
 The daily cleanup of withdrawn complaints runs through Vercel Cron (`backend/vercel.json`).
 

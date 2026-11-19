@@ -14,7 +14,6 @@ import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
-import { v2 as cloudinary } from "cloudinary";
 
 // --- Setup for ESM paths ---
 const __filename = fileURLToPath(import.meta.url);
@@ -30,36 +29,16 @@ const JWT_SECRET = process.env.JWT_SECRET || (IS_PROD ? null : "dev-only-change-
 if (!JWT_SECRET) {
   throw new Error("JWT_SECRET must be set in production (add it in your Vercel environment variables).");
 }
-// Vercel's filesystem is read-only except /tmp, so local uploads go there.
-const UPLOAD_DIR = IS_VERCEL ? "/tmp/uploads" : path.join(process.cwd(), "uploads");
-
-// Cloudinary is used for uploads when its credentials are set (required on Vercel,
-// because files saved on a serverless function disappear after the request).
-const USE_CLOUDINARY = Boolean(
-  process.env.CLOUDINARY_URL ||
-  (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET)
-);
-if (USE_CLOUDINARY && !process.env.CLOUDINARY_URL) {
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
-    secure: true,
-  });
-}
+// Uploaded files (logos, attachments) are stored inside the database, in the
+// "files" table, so the app needs no separate file storage service.
 const WITHDRAW_RETENTION_DAYS = Number(process.env.WITHDRAW_RETENTION_DAYS || 30);
-const ANON_COOKIE = 'anon_vote_id';  
-
-if (!USE_CLOUDINARY && !fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
+const ANON_COOKIE = 'anon_vote_id';
 
 // --- Middleware ---
 
 app.set("trust proxy", 1);
 app.use(express.json());
 app.use(cookieParser());
-app.use("/uploads", express.static(UPLOAD_DIR));
 
 // app.use(cors({
 //   origin: 'http://localhost:3000',
@@ -125,7 +104,7 @@ const db = mysql.createPool({
 });
 
 // --- Uploads (multer) ---
-// Files are kept in memory first, then saved to Cloudinary (or the local uploads folder).
+// Files are kept in memory first, then saved in the database (see saveUpload).
 const upload = multer({
   storage: multer.memoryStorage(),
   // Vercel functions accept request bodies up to about 4.5 MB, so we cap files at 4 MB.
@@ -136,23 +115,26 @@ const upload = multer({
   },
 });
 
-// Saves an uploaded file and returns what we store in the database:
-// a full https URL (Cloudinary) or a /uploads/... path (local development).
-async function saveUpload(file, folder) {
+// Saves an uploaded file in the "files" table and returns the path we store
+// on the organization/complaint, e.g. /api/files/3f9c...  The random token
+// (not the numeric id) makes file links impossible to guess.
+async function saveUpload(file) {
   if (!file) return null;
-  if (USE_CLOUDINARY) {
-    const result = await new Promise((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        { folder: `allegation-portal/${folder}`, resource_type: "auto" },
-        (err, res) => (err ? reject(err) : resolve(res))
-      );
-      stream.end(file.buffer);
-    });
-    return result.secure_url;
-  }
-  const name = Date.now() + "-" + Math.random().toString(36).slice(2, 8) + path.extname(file.originalname);
-  await fs.promises.writeFile(path.join(UPLOAD_DIR, name), file.buffer);
-  return `/uploads/${name}`;
+  const token = crypto.randomBytes(16).toString("hex");
+  await db.query(
+    "INSERT INTO files (token, mime, original_name, size, data) VALUES (?, ?, ?, ?, ?)",
+    [token, file.mimetype, file.originalname.slice(0, 255), file.size, file.buffer]
+  );
+  // Keep the original name (and extension) at the end of the link so the
+  // frontend can tell PDFs, images, videos and audio apart.
+  const safeName = (file.originalname || "file").replace(/[^A-Za-z0-9._-]+/g, "_").slice(-80) || "file";
+  return `/api/files/${token}/${safeName}`;
+}
+
+// Deletes a stored file if the given path points to one.
+async function deleteUpload(stored) {
+  const m = /^\/api\/files\/([a-f0-9]{32})(\/|$)/.exec(stored || "");
+  if (m) await db.query("DELETE FROM files WHERE token = ?", [m[1]]);
 }
 
 // Turns a stored path into a URL the browser can open.
@@ -604,7 +586,7 @@ app.post("/register", upload.single("logo"), async (req, res) => {
       return res.status(400).json({ success: false, error: "All fields are required" });
 
     const slug = slugify(orgName);
-    const logo = await saveUpload(req.file, "logos");
+    const logo = await saveUpload(req.file);
     const accessType = companyType;
 
     const [[orgByName]] = await db.query("SELECT COUNT(*) AS c FROM organizations WHERE name=?", [orgName]);
@@ -638,7 +620,7 @@ app.post("/api/register/organization", upload.single("logo"), async (req, res) =
       return res.status(400).json({ success: false, message: "Missing required fields" });
 
     const slug = slugify(orgName);
-    const logo = await saveUpload(req.file, "logos");
+    const logo = await saveUpload(req.file);
     const accessType = orgType || "Public";
 
     const [[byName]] = await db.query("SELECT COUNT(*) AS c FROM organizations WHERE name=?", [orgName]);
@@ -672,7 +654,7 @@ app.post("/register/organization", upload.single("logo"), async (req, res) => {
       return res.status(400).json({ success: false, message: "Missing required fields" });
 
     const slug = slugify(orgName);
-    const logo = await saveUpload(req.file, "logos");
+    const logo = await saveUpload(req.file);
     const accessType = orgType || "Public";
 
     const [[byName]] = await db.query("SELECT COUNT(*) AS c FROM organizations WHERE name=?", [orgName]);
@@ -1217,7 +1199,7 @@ app.post("/api/complaints", softAuth, upload.single("attachment"), async (req, r
       }
     }
 
-    const attachment_path = await saveUpload(req.file, "attachments");
+    const attachment_path = await saveUpload(req.file);
     const trackingCode = Math.random().toString(36).slice(2, 10).toUpperCase();
     const userId = !anonymous && req.user?.role === "user" ? req.user.id : null;
 
@@ -1297,7 +1279,7 @@ app.get("/api/complaints/:id", auth, async (req, res) => {
       // Format attachments as array for consistency
       attachments: r.attachment_path ? [{
         url: fileUrl(req, r.attachment_path),
-        name: r.attachment_path.split('/').pop().split('?')[0]
+        name: r.attachment_path.split('/').pop()
       }] : []
     };
 
@@ -1800,7 +1782,7 @@ if (title !== undefined || description !== undefined) {
     user_id: r.userId,
     attachments: r.attachment_path ? [{
       url: fileUrl(req, r.attachment_path),
-      name: r.attachment_path.split('/').pop().split('?')[0]
+      name: r.attachment_path.split('/').pop()
     }] : []
   };
 
@@ -1904,6 +1886,13 @@ app.get("/api/news", (_req, res) => {
 
 async function purgeWithdrawn() {
   try {
+    const [old] = await db.query(
+      `SELECT attachment_path FROM complaints
+        WHERE status='Withdrawn' AND withdrawnAt IS NOT NULL
+          AND withdrawnAt < (NOW() - INTERVAL ? DAY)`,
+      [WITHDRAW_RETENTION_DAYS]
+    );
+    for (const row of old) await deleteUpload(row.attachment_path);
     await db.query(
       `
       DELETE FROM complaints 
@@ -1961,19 +1950,12 @@ app.post("/api/organizations/:id/logo", auth, upload.single("logo"), async (req,
       [orgId]
     );
 
-    if (org.length && org[0].logo && org[0].logo.startsWith("/uploads/")) {
-      const oldLogoPath = path.join(process.cwd(), org[0].logo.replace(/^\//, ''));
-      try {
-        if (fs.existsSync(oldLogoPath)) {
-          fs.unlinkSync(oldLogoPath);
-        }
-      } catch (err) {
-        console.warn("Failed to delete old logo:", err.message);
-      }
+    if (org.length && org[0].logo) {
+      await deleteUpload(org[0].logo);
     }
 
     // Save new logo path
-    const logoPath = await saveUpload(req.file, "logos");
+    const logoPath = await saveUpload(req.file);
     
     await db.query(
       "UPDATE organizations SET logo = ? WHERE id = ?",
@@ -2147,10 +2129,35 @@ app.get("/", (_req, res) =>
   res.send("Server running - Public Allegations Portal with /api routes active")
 );
 
+// Serves an uploaded file (logo or attachment) from the database.
+app.get(["/api/files/:token", "/api/files/:token/:name"], async (req, res) => {
+  try {
+    if (!/^[a-f0-9]{32}$/.test(req.params.token)) return res.status(404).end();
+    const [rows] = await db.query(
+      "SELECT mime, original_name, data FROM files WHERE token = ?",
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).end();
+    const f = rows[0];
+    res.set({
+      "Content-Type": f.mime,
+      "Content-Length": f.data.length,
+      // Files never change once uploaded, so browsers and Vercel's CDN can cache them.
+      "Cache-Control": "public, max-age=31536000, immutable",
+      "Content-Disposition": `inline; filename="${encodeURIComponent(f.original_name)}"`,
+      "X-Content-Type-Options": "nosniff",
+    });
+    return res.send(f.data);
+  } catch (e) {
+    console.error("[file download]", e);
+    return res.status(500).end();
+  }
+});
+
 app.get("/api/health", async (_req, res) => {
   try {
     await db.query("SELECT 1");
-    res.json({ success: true, database: "connected", uploads: USE_CLOUDINARY ? "cloudinary" : "local" });
+    res.json({ success: true, database: "connected" });
   } catch (e) {
     res.status(500).json({ success: false, database: "error", message: e.message });
   }
@@ -2213,7 +2220,6 @@ if (!IS_VERCEL) {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
     console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 JWT Secret: ${JWT_SECRET ? 'SET' : 'NOT SET'}`);
-    console.log(`📂 Upload Directory: ${UPLOAD_DIR}`);
     console.log('='.repeat(50));
     console.log('Available endpoints:');
     console.log('  POST /api/auth/login');
