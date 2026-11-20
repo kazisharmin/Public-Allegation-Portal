@@ -55,28 +55,32 @@ const allowedOrigins = [
   ...String(process.env.FRONTEND_URL || '').split(',').map(s => s.trim()).filter(Boolean),
 ];
 
-app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, Postman, server-to-server)
-    if (!origin) return callback(null, true);
-    
-    // Check if origin is in allowed list (supports both exact match and startsWith)
-    const isAllowed = allowedOrigins.some(allowed => 
-      origin === allowed || origin.startsWith(allowed.replace(/\/$/, ''))
-    );
-    
-    if (isAllowed) {
-      return callback(null, true);
-    }
-    
-    const msg = `CORS policy: Origin ${origin} is not allowed.`;
-    console.error(msg);
-    return callback(new Error(msg), false);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Anon-ID'],
-  exposedHeaders: ['Set-Cookie']
+// Your frontend's Vercel addresses: the main one plus preview links like
+// public-allegation-portal-git-main-xxxx.vercel.app
+const FRONTEND_PATTERN = /^https:\/\/public-allegation-portal(-[a-z0-9-]+)?\.vercel\.app$/;
+
+app.use(cors((req, callback) => {
+  const origin = req.headers.origin;
+  const selfOrigin = `${req.protocol}://${req.get("host")}`;
+  // Exact matches only: a "startsWith" check would also let in look-alike
+  // domains such as https://public-allegation-portal-five.vercel.app.evil.com
+  const isAllowed =
+    !origin ||                        // server-to-server, curl, Postman
+    origin === selfOrigin ||          // the API calling itself
+    allowedOrigins.includes(origin) ||
+    FRONTEND_PATTERN.test(origin);
+
+  if (!isAllowed) {
+    console.error(`CORS policy: Origin ${origin} is not allowed.`);
+    return callback(new Error(`CORS policy: Origin ${origin} is not allowed.`));
+  }
+  callback(null, {
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Anon-ID'],
+    exposedHeaders: ['Set-Cookie'],
+  });
 }));
 
 

@@ -84,7 +84,7 @@ The daily cleanup of withdrawn complaints runs through Vercel Cron (`backend/ver
 
 ## 4. Frontend on Vercel
 
-1. In `frontend/vercel.json`, replace both `REPLACE-WITH-YOUR-BACKEND.vercel.app` with your backend's domain and commit.
+1. `frontend/vercel.json` forwards `/api` to `https://allegation-portal-api.vercel.app`. If your backend has a different domain, change it there.
 2. In the frontend Vercel project (Root Directory `frontend`), add the environment variable
    `VITE_API_URL` = `/api`, then **redeploy**.
 3. Open the site, log in with a demo account, and try filing a complaint.
